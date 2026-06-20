@@ -1,0 +1,3 @@
+# smoldns
+
+Learning dns things
