@@ -1,14 +1,43 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 )
 
 const RecursionDesired uint16 = 1 << 8
 const ClassIn = 1
+
+func executeQuery(address string, name string, recordType uint16) (dnsPacket, error) {
+	query, err := buildQuery(name, recordType)
+	if err != nil {
+		return dnsPacket{}, fmt.Errorf("failed to build query: %v", err)
+	}
+	conn, err := net.Dial("udp", address)
+	if err != nil {
+		return dnsPacket{}, fmt.Errorf("failed to open connection: %v", err)
+	}
+	defer conn.Close()
+	_, err = conn.Write(query)
+	if err != nil {
+		return dnsPacket{}, fmt.Errorf("failed to write query: %v", err)
+	}
+	resp := make([]byte, 512)
+	n, err := conn.Read(resp)
+	if err != nil {
+		return dnsPacket{}, fmt.Errorf("failed to read response: %v", err)
+	}
+	reader := bytes.NewReader(resp[:n])
+	packet, err := parsePacket(reader)
+	if err != nil {
+		return dnsPacket{}, fmt.Errorf("failed to parse packet: %v", err)
+	}
+	return packet, nil
+}
 
 func buildQuery(domainName string, recordType uint16) ([]byte, error) {
 	query := []byte{}
@@ -74,6 +103,10 @@ func (q dnsQuestion) toBytes() ([]byte, error) {
 	return binary.Append(data, binary.BigEndian, struct{ Type, Class uint16 }{q.Type_, q.Class})
 }
 
+func (q dnsQuestion) toString() string {
+	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v}", q.Name, q.Type_, q.Class)
+}
+
 type dnsRecord struct {
 	Name  []byte
 	Type_ uint16
@@ -82,12 +115,37 @@ type dnsRecord struct {
 	Data  []byte
 }
 
+func (r *dnsRecord) toString() string {
+	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v, TTL: %v, Data: %v}", r.Name, r.Type_, r.Class, r.TTL, r.Data)
+}
+
 type dnsPacket struct {
 	header      dnsHeader
 	questions   []dnsQuestion
 	answers     []dnsRecord
 	authorities []dnsRecord
 	additionals []dnsRecord
+}
+
+func (p *dnsPacket) toString() string {
+	header := fmt.Sprintf("{Id: %v, Flags: %v, NumQuestions: %v, NumAnswers: %v, NumAuthorities: %v, NumAdditionals: %v}", p.header.Id, p.header.Flags, p.header.NumQuestions, p.header.NumAnswers, p.header.NumAuthorities, p.header.NumAdditionals)
+	questions := []string{}
+	for _, q := range p.questions {
+		questions = append(questions, q.toString())
+	}
+	answers := []string{}
+	for _, a := range p.answers {
+		answers = append(answers, a.toString())
+	}
+	authorities := []string{}
+	for _, a := range p.authorities {
+		authorities = append(authorities, a.toString())
+	}
+	additionals := []string{}
+	for _, a := range p.additionals {
+		additionals = append(additionals, a.toString())
+	}
+	return fmt.Sprintf("Packet: {\n  Header:      %v\n  Questions:   %v\n  Answers:     %v\n  Authorities: %v\n  Additionals: %v\n}", header, questions, answers, authorities, additionals)
 }
 
 func parsePacket(r io.ReadSeeker) (dnsPacket, error) {
