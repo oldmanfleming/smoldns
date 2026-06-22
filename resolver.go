@@ -10,7 +10,11 @@ import (
 )
 
 const RecursionDesired uint16 = 1 << 8
+const RecursionNotDesired uint16 = 0 << 8
 const ClassIn = 1
+const TypeA = 1
+const TypeNS = 2
+const TypeTxt = 16
 
 func executeQuery(address string, name string, recordType uint16) (dnsPacket, error) {
 	query, err := buildQuery(name, recordType)
@@ -92,31 +96,8 @@ func (h dnsHeader) toBytes() ([]byte, error) {
 	return binary.Append([]byte{}, binary.BigEndian, h)
 }
 
-type dnsQuestion struct {
-	Name  []byte
-	Type_ uint16
-	Class uint16
-}
-
-func (q dnsQuestion) toBytes() ([]byte, error) {
-	data := append([]byte{}, q.Name...)
-	return binary.Append(data, binary.BigEndian, struct{ Type, Class uint16 }{q.Type_, q.Class})
-}
-
-func (q dnsQuestion) toString() string {
-	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v}", q.Name, q.Type_, q.Class)
-}
-
-type dnsRecord struct {
-	Name  []byte
-	Type_ uint16
-	Class uint16
-	TTL   uint32
-	Data  []byte
-}
-
-func (r *dnsRecord) toString() string {
-	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v, TTL: %v, Data: %v}", r.Name, r.Type_, r.Class, r.TTL, r.Data)
+func (h dnsHeader) toString() string {
+	return fmt.Sprintf("{Id: %v, Flags: %v, NumQuestions: %v, NumAnswers: %v, NumAuthorities: %v, NumAdditionals: %v}", h.Id, h.Flags, h.NumQuestions, h.NumAnswers, h.NumAuthorities, h.NumAdditionals)
 }
 
 type dnsPacket struct {
@@ -128,7 +109,7 @@ type dnsPacket struct {
 }
 
 func (p *dnsPacket) toString() string {
-	header := fmt.Sprintf("{Id: %v, Flags: %v, NumQuestions: %v, NumAnswers: %v, NumAuthorities: %v, NumAdditionals: %v}", p.header.Id, p.header.Flags, p.header.NumQuestions, p.header.NumAnswers, p.header.NumAuthorities, p.header.NumAdditionals)
+	header := p.header.toString()
 	questions := []string{}
 	for _, q := range p.questions {
 		questions = append(questions, q.toString())
@@ -176,6 +157,52 @@ func parsePacket(r io.ReadSeeker) (dnsPacket, error) {
 		authorities,
 		additionals,
 	}, nil
+}
+
+type dnsQuestion struct {
+	Name  []byte
+	Type_ uint16
+	Class uint16
+}
+
+func (q dnsQuestion) toBytes() ([]byte, error) {
+	data := append([]byte{}, q.Name...)
+	return binary.Append(data, binary.BigEndian, struct{ Type, Class uint16 }{q.Type_, q.Class})
+}
+
+func (q dnsQuestion) toString() string {
+	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v}", q.Name, q.Type_, q.Class)
+}
+
+type dnsRecord struct {
+	Name  []byte
+	Type_ uint16
+	Class uint16
+	TTL   uint32
+	Data  []byte
+}
+
+func (r *dnsRecord) toString() string {
+	var prettyData string
+	switch r.Type_ {
+	case TypeA:
+		prettyData = formatIP(r.Data)
+	default:
+		prettyData = fmt.Sprintf("%v", r.Data)
+	}
+	return fmt.Sprintf("{Name: %s, Type_: %v, Class: %v, TTL: %v, Data: %v}", r.Name, r.Type_, r.Class, r.TTL, prettyData)
+}
+
+// Interleave the address parts with '.'
+func formatIP(data []byte) string {
+	address := ""
+	for _, part := range data {
+		if len(address) > 0 {
+			address = address + "."
+		}
+		address = address + fmt.Sprintf("%v", part)
+	}
+	return address
 }
 
 func parseHeader(r io.Reader) (dnsHeader, error) {
@@ -245,8 +272,7 @@ func parseRecord(r io.ReadSeeker) (dnsRecord, error) {
 	if err != nil {
 		return dnsRecord{}, fmt.Errorf("parsing record ttl: %w", err)
 	}
-
-	data, err := parseData(r)
+	data, err := parseData(r, type_)
 	if err != nil {
 		return dnsRecord{}, fmt.Errorf("parsing record data: %w", err)
 	}
@@ -323,14 +349,25 @@ func parseCompressed(r io.ReadSeeker, pointer_l uint8) ([]byte, error) {
 	return name, nil
 }
 
-func parseData(r io.Reader) ([]byte, error) {
+func parseData(r io.ReadSeeker, type_ uint16) ([]byte, error) {
+	switch type_ {
+	case TypeA:
+		return parseFixedData(r)
+	case TypeNS:
+		return parseName(r)
+	default:
+		return parseFixedData(r)
+	}
+}
+
+func parseFixedData(r io.Reader) ([]byte, error) {
 	dataLen, err := parseFixed[uint16](r)
 	if err != nil {
-		return []byte{}, fmt.Errorf("parsing record data len: %w", err)
+		return []byte{}, fmt.Errorf("parsing fixed data len: %w", err)
 	}
 	data := make([]byte, dataLen)
 	if _, err := io.ReadFull(r, data); err != nil {
-		return []byte{}, fmt.Errorf("parsing record data: %w", err)
+		return []byte{}, fmt.Errorf("parsing fixed data: %w", err)
 	}
 	return data, nil
 }
