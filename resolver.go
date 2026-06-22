@@ -187,6 +187,8 @@ func (r *dnsRecord) toString() string {
 	switch r.Type_ {
 	case TypeA:
 		prettyData = formatIP(r.Data)
+	case TypeNS:
+		prettyData = fmt.Sprintf("%s", r.Data)
 	default:
 		prettyData = fmt.Sprintf("%v", r.Data)
 	}
@@ -350,26 +352,21 @@ func parseCompressed(r io.ReadSeeker, pointer_l uint8) ([]byte, error) {
 }
 
 func parseData(r io.ReadSeeker, type_ uint16) ([]byte, error) {
-	switch type_ {
-	case TypeA:
-		return parseFixedData(r)
-	case TypeNS:
-		return parseName(r)
-	default:
-		return parseFixedData(r)
-	}
-}
-
-func parseFixedData(r io.Reader) ([]byte, error) {
 	dataLen, err := parseFixed[uint16](r)
 	if err != nil {
 		return []byte{}, fmt.Errorf("parsing fixed data len: %w", err)
 	}
-	data := make([]byte, dataLen)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return []byte{}, fmt.Errorf("parsing fixed data: %w", err)
+	switch type_ {
+	case TypeNS:
+		return parseName(r)
+	default:
+		data := make([]byte, dataLen)
+		if _, err := io.ReadFull(r, data); err != nil {
+			return []byte{}, fmt.Errorf("parsing fixed data: %w", err)
+		}
+		return data, nil
+
 	}
-	return data, nil
 }
 
 // Parse a fixed size value
